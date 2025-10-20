@@ -2,6 +2,7 @@
 Contains the preprocessing pipeline for the event logs examined in each 
 case study. 
 """
+from asyncio import log
 import pandas as pd 
 import numpy as np
 
@@ -27,6 +28,69 @@ def preprocess_bpic19(log):
     
     return log 
 
+def preprocess_bpic12(log):
+    """Preprocess the BPIC12 event log for DyLoPro."""
+
+    import numpy as np
+    import pandas as pd
+
+    log = log.copy()
+
+    # --- Timestamps ---
+    log['time:timestamp'] = pd.to_datetime(log['time:timestamp'], errors='coerce', utc=True)
+    log = log.dropna(subset=['time:timestamp', 'concept:name', 'case:concept:name'])
+
+    # --- Categorical columns ---
+    for col in ['case:concept:name', 'org:resource', 'concept:name', 'lifecycle:transition']:
+        if col in log.columns:
+            log[col] = log[col].astype('object')
+
+    # --- Trace-level features ---
+    if 'case:AMOUNT_REQ' in log.columns:
+        log['case:AMOUNT_REQ'] = pd.to_numeric(log['case:AMOUNT_REQ'], errors='coerce')
+    if 'case:REG_DATE' in log.columns:
+        log['case:REG_DATE'] = pd.to_datetime(log['case:REG_DATE'], errors='coerce', utc=True)
+
+    # --- Case duration ---
+    case_durations = (
+        log.groupby('case:concept:name')['time:timestamp']
+        .agg(['min', 'max'])
+        .assign(case_duration=lambda x: (x['max'] - x['min']).dt.total_seconds())
+    )
+    log = log.merge(case_durations['case_duration'], on='case:concept:name', how='left')
+
+    # --- Time since case start & inter-event time ---
+    log['time_since_case_start'] = (
+        log['time:timestamp'] - log.groupby('case:concept:name')['time:timestamp'].transform('min')
+    ).dt.total_seconds()
+    log['inter_event_time'] = log.groupby('case:concept:name')['time:timestamp'].diff().dt.total_seconds()
+
+    # --- DyLoPro outcomes ---
+    # Step 1: Compute the last activity per case
+    last_event_per_case = log.groupby('case:concept:name')['concept:name'].last()
+    
+    # Step 2: Map last activity to all events in the case
+    log['last_event'] = log['case:concept:name'].map(last_event_per_case)
+
+    # Step 3: Generate binary outcome columns only for events that exist in the data
+    unique_last_events = last_event_per_case.unique()
+
+    if 'A_APPROVED' in unique_last_events:
+        log['case_approved'] = np.where(log['last_event'] == 'A_APPROVED', 1, 0).astype(int)
+
+    if 'A_DECLINED' in unique_last_events:
+        log['case_declined'] = np.where(log['last_event'] == 'A_DECLINED', 1, 0).astype(int)
+
+    if 'A_CANCELLED' in unique_last_events:
+        log['case_cancelled'] = np.where(log['last_event'] == 'A_CANCELLED', 1, 0).astype(int)
+
+    # Step 4: Optional categorical outcome column
+    log['case:outcome'] = log['last_event']
+
+    # Step 5: Drop helper column
+    log = log.drop(columns=['last_event'])
+
+    return log
 
 
 def preprocess_bpic17(log):
