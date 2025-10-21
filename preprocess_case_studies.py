@@ -31,9 +31,6 @@ def preprocess_bpic19(log):
 def preprocess_bpic12(log):
     """Preprocess the BPIC12 event log for DyLoPro."""
 
-    import numpy as np
-    import pandas as pd
-
     log = log.copy()
 
     # --- Timestamps ---
@@ -66,29 +63,64 @@ def preprocess_bpic12(log):
     log['inter_event_time'] = log.groupby('case:concept:name')['time:timestamp'].diff().dt.total_seconds()
 
     # --- DyLoPro outcomes ---
-    # Step 1: Compute the last activity per case
-    last_event_per_case = log.groupby('case:concept:name')['concept:name'].last()
+    # Step 1: Filter out only events starting with "A_"
+    log_a = log[log['concept:name'].str.startswith('A_')].copy()
     
-    # Step 2: Map last activity to all events in the case
-    log['last_event'] = log['case:concept:name'].map(last_event_per_case)
+    # Step 2: For each case, get the last "A_" activity
+    last_a_event = log_a.groupby('case:concept:name')['concept:name'].last().reset_index()
+    last_a_event.rename(columns={'concept:name': 'last_a_event'}, inplace=True)
+    
+    # Step 3: Merge back into the main log
+    log = log.merge(last_a_event, on='case:concept:name', how='left')
+    
+    # Step 4: Group the activities and create binary outcome columns
+    log['case_declined'] = np.where(log['last_a_event'] == 'A_DECLINED', 1, 0).astype(int)
+    log['case_cancelled'] = np.where(log['last_a_event'] == 'A_CANCELLED', 1, 0).astype(int)
+    
+    log['case_approved'] = np.where(
+        (log['last_a_event'] == 'A_APPROVED') |
+        (log['last_a_event'] == 'A_ACTIVATED') |
+        (log['last_a_event'] == 'A_REGISTERED'),
+        1, 0
+    ).astype(int)
 
-    # Step 3: Generate binary outcome columns only for events that exist in the data
-    unique_last_events = last_event_per_case.unique()
+    log['case_unresolved'] = np.where(
+        (log['last_a_event'] == 'A_FINALIZED') |
+        (log['last_a_event'] == 'A_ACCEPTED') |
+        (log['last_a_event'] == 'A_PREACCEPTED'),
+        1, 0
+    ).astype(int)
+    
+    # Step 5: Optional categorical outcome column
+    log['case:outcome'] = log['last_a_event']
+    
+    # Step 6: Drop helper column
+    log = log.drop(columns=['last_a_event'])
+    
+    # # --- DyLoPro outcomes ---
+    # # Step 1: Compute the last activity per case
+    # last_event_per_case = log.groupby('case:concept:name')['concept:name'].last()
+    
+    # # Step 2: Map last activity to all events in the case
+    # log['last_event'] = log['case:concept:name'].map(last_event_per_case)
 
-    if 'A_APPROVED' in unique_last_events:
-        log['case_approved'] = np.where(log['last_event'] == 'A_APPROVED', 1, 0).astype(int)
+    # # Step 3: Generate binary outcome columns only for events that exist in the data
+    # unique_last_events = last_event_per_case.unique()
 
-    if 'A_DECLINED' in unique_last_events:
-        log['case_declined'] = np.where(log['last_event'] == 'A_DECLINED', 1, 0).astype(int)
+    # if 'A_APPROVED' in unique_last_events:
+    #     log['case_approved'] = np.where(log['last_event'] == 'A_APPROVED', 1, 0).astype(int)
 
-    if 'A_CANCELLED' in unique_last_events:
-        log['case_cancelled'] = np.where(log['last_event'] == 'A_CANCELLED', 1, 0).astype(int)
+    # if 'A_DECLINED' in unique_last_events:
+    #     log['case_declined'] = np.where(log['last_event'] == 'A_DECLINED', 1, 0).astype(int)
 
-    # Step 4: Optional categorical outcome column
-    log['case:outcome'] = log['last_event']
+    # if 'A_CANCELLED' in unique_last_events:
+    #     log['case_cancelled'] = np.where(log['last_event'] == 'A_CANCELLED', 1, 0).astype(int)
 
-    # Step 5: Drop helper column
-    log = log.drop(columns=['last_event'])
+    # # Step 4: Optional categorical outcome column
+    # log['case:outcome'] = log['last_event']
+
+    # # Step 5: Drop helper column
+    # log = log.drop(columns=['last_event'])
 
     return log
 
