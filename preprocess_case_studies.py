@@ -168,17 +168,126 @@ def preprocess_RTFM(log):
     log : pandas.DataFrame
         Preprocessed event log.
     """
-
-    # Converting the appropriate columns to object dtype 
-    to_object = {'org:resource': object, 'article': object, 'points': object}
-
-    # Convert columns to the specified dtypes
-    log = log.astype(to_object)
-
     # Covnert timestamp col to appropriate datetime format 
     log['time:timestamp'] = pd.to_datetime(log['time:timestamp'], utc=True)
 
-    # Drop the 'matricola' column
-    log = log.drop('matricola', axis=1)
+    #ADDED
+    # Drop unnecessary columns
+    for col in ['matricola', 'lifecycle:transition']:
+        if col in log.columns:
+            log = log.drop(col, axis=1)
 
-    return log 
+    # Sort events by case and timestamp
+    log = log.sort_values(['case:concept:name', 'time:timestamp'])
+
+
+
+    # --- CASE-LEVEL CATEGORICAL FEATURES ---
+    categorical_case_cols = ['notificationType', 'lastSent', 'vehicleClass', 'article', 'points']
+
+    for col in categorical_case_cols:
+        if col not in log.columns:
+            continue
+
+        if col in ['notificationType', 'lastSent']:
+            # Fill with the first non-null value per case, or "None" if missing entirely
+            log[col] = (
+                log.groupby('case:concept:name')[col]
+                   .transform(lambda x: x.dropna().iloc[0] if x.notna().any() else 'None')
+                   .astype(object)
+            )
+        else:
+            # For columns expected to stay constant (e.g. vehicleClass, article, points)
+            log[col] = (
+                log.groupby('case:concept:name')[col]
+                   .ffill()
+                   .bfill()
+                   .astype(object)
+            )
+
+
+    
+    # --- ADD DISMISSAL OUTCOME VARIABLES ---
+    # Get the last dismissal value per case (the final outcome)
+    dismissal_case = (
+        log.groupby('case:concept:name')['dismissal']
+        .last()
+    )
+    # Create binary outcome
+    log = log.merge(
+        dismissal_case.rename('dismissal_case'),
+        left_on='case:concept:name',
+        right_index=True,
+        how='left'
+    )
+    log['outcome_dismissed'] = ((log['dismissal_case'] == '#') | (log['dismissal_case'] == 'G')).astype(int)
+    # Drop the dismissal_case column
+    log = log.drop('dismissal_case', axis=1)
+
+    # Numeric case feature
+    # if 'expense' in log.columns:
+    #     log['expense'] = log.groupby('case:concept:name')['expense'].transform(
+    #         lambda x: x.ffill().bfill()
+    #     )
+
+    if 'expense' in log.columns:
+        log['expense'] = (
+            log.groupby('case:concept:name')['expense']
+            .transform(lambda x: x.ffill().bfill())
+            .fillna(0)
+        )
+
+    if 'org:resource' in log.columns:
+        log['org:resource'] = (
+            log.groupby('case:concept:name')['org:resource']
+            .ffill()
+        )
+
+    # Clean and convert categorical columns to string without '.0' and replace missing values
+    for col in ['org:resource', 'article', 'points']:
+        log[col] = (
+            log[col]
+            .apply(lambda x: str(int(x)) if pd.notnull(x) and isinstance(x, (int, float)) and float(x).is_integer() 
+                else (str(x) if pd.notnull(x) else 'Unknown')))
+    
+
+
+    # --- ADD PAYMENT OUTCOME VARIABLES ---
+    # Last non-null amount per case
+    last_amount = (
+        log.dropna(subset=['amount'])
+           .groupby('case:concept:name')['amount']
+           .last()
+           .rename('last_amount')
+    )
+
+    # Last non-null totalPaymentAmount per case
+    last_total = (
+        log.dropna(subset=['totalPaymentAmount'])
+           .groupby('case:concept:name')['totalPaymentAmount']
+           .last()
+           .rename('last_totalPaymentAmount')
+    )
+
+    # Merge back to the main DataFrame
+    log = log.merge(last_amount, on='case:concept:name', how='left')
+    log = log.merge(last_total, on='case:concept:name', how='left')
+
+    # Compute outcome_payment
+    def payment_outcome(row):
+        total = row['last_totalPaymentAmount']
+        amount = row['last_amount']
+        if pd.isna(total) or total == 0:
+            return 'unpaid'
+        elif total >= amount:
+            return 'fully_paid'
+        else:
+            return 'partially_paid'
+
+    log['outcome_payment'] = log.apply(payment_outcome, axis=1)
+
+    log['outcome_fully_paid'] = (log['outcome_payment'] == 'fully_paid').astype(int)
+    log['outcome_partially_paid'] = (log['outcome_payment'] == 'partially_paid').astype(int)
+    log['outcome_unpaid'] = (log['outcome_payment'] == 'unpaid').astype(int)
+
+    return log
