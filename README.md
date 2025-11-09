@@ -1,3 +1,12 @@
+# __DyLoPro: A Replication of a Framework for Profiling the Dynamics of Event Logs__
+The following repository is a fork from the case studies done in the DyLoPro paper. This fork includes two additional case studies:
+1. BPIC12: an event log of a loan application process.
+2. RTFM: a real-life event log of an information system managing road traffic fines.
+
+Below, the original README can be found. 
+
+
+
 # __DyLoPro: Profiling the Dynamics of Event Logs - *Case Studies*__ 
 
 <p align="center">
